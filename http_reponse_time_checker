@@ -1,0 +1,213 @@
+#!/usr/bin/php
+<?
+#################################################################################
+# Developed by Widerplanet
+# Author of file: dancal
+#################################################################################
+set_time_limit(0);
+
+$err_cnt	= 0;
+$rUrlList	= array(
+                    'test1'=>'http://test1.widerplanet.com',
+                    'test2'=>'http://test2.widerplanet.com',
+                    'test3'=>'http://test3.widerplanet.com'
+				);
+
+
+class munin {
+
+	static function graph(Closure $block) {
+
+		$graph = new MuninGraph;
+		$block($graph);
+
+		echo $graph;
+
+	}
+
+}
+
+class MuninGraph {
+
+	static $pre_process = array('scale');
+
+	public $config = "";
+	public $collectors = array();
+
+	public function collector($name, $label=null) {
+		$collector = new MuninCollector($this, $name, $label);
+		$this->collectors[] = $collector;
+
+		return $collector;
+	}
+
+	public function collect(Closure $block) {
+		if (static::in_config_mode()) return;
+
+		call_user_func_array($block, $this->collectors);
+
+	}
+
+	static public function in_config_mode() {
+		return in_array("config", $_SERVER['argv']);
+	}
+
+	public function __set($key, $value) {
+
+		if (in_array($key, static::$pre_process)) {
+			$value = $this->{$key}($value);
+		}
+
+		$this->add_config("graph_{$key} $value");
+	}
+
+	public function __toString() {
+		if (! static::in_config_mode()) return "";
+		$config = $this->config;
+
+		foreach($this->collectors as $collector) {
+			$config .= $collector;
+		}
+
+		return $config;
+	}
+
+	public function add_config($string) {
+		$this->config .= $string . "\n";
+	}
+
+	private function scale($value) {
+		if ($value === true || $value === "yes") {
+			return "yes";
+		}
+
+		return "no";
+
+	}
+
+}
+
+class MuninCollector {
+
+	public $graph = null;
+	public $name  = null;
+	public $config = "";
+
+	public function __construct($graph, $name, $label=null) {
+		$this->graph = $graph;
+		$this->name  = $name;
+
+		if ($label === null) $label = $name;
+		$this->label = $label;
+	}
+
+	public function __set($key, $value) {
+
+		if ($key === "value") {
+			echo "{$this->name}.{$key} $value\n";
+		}
+
+		$this->add_config($key, $value);
+	}
+
+	public function add_config($key, $value) {
+		$this->config .= "{$this->name}.{$key} $value\n";
+	}
+
+	public function __toString() {
+		return $this->config;
+	}
+
+}
+
+$rResultData	= array();
+foreach ($rUrlList as $server => $url ) {
+
+	$ch 		= curl_init($url);
+	curl_setopt($ch, CURLOPT_HEADER, 1);
+	curl_setopt($ch, CURLOPT_NOBODY, 1);
+	curl_setopt($ch, CURLOPT_USERAGENT, 'health-check');
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+	curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 60);
+	curl_setopt($ch, CURLOPT_FAILONERROR, 1);
+	$execute = curl_exec($ch);
+	$info = curl_getinfo($ch);
+	curl_close($ch);
+
+	munin::graph(function($graph) {
+
+		global $server;
+		global $info;
+
+	    $graph->title 		= "http response lb";
+    	$graph->category 	= "apache";
+	    $graph->scale 		= true;
+
+    	$graph->info 		= "...";
+	    $graph->vlabel 		= "Latancy";
+
+		//total time
+    	$load				= $graph->collector("total_$server");
+	    $load->min 			= 0;
+    	$graph->collect(function($load) {
+			global $info;
+			global $server;
+			global $rResultData;
+
+			$name	= "total_${server}";
+			$sCode	= $info['http_code'];
+			if ( $sCode == 200 || $sCode == 302 ) {
+				$rResultData[$name]	= $info['total_time'];
+			} else {
+				$rResultData[$name]	= -$info['total_time'];
+			}
+
+	    });
+
+		//connect time
+    	$load				= $graph->collector("conn_$server");
+	    $load->min 			= 0;
+    	$graph->collect(function($load) {
+			global $info;
+			global $server;
+			global $rResultData;
+
+			$name	= "conn_${server}";
+			$sCode	= $info['http_code'];
+			if ( $sCode == 200 || $sCode == 302 ) {
+				$rResultData[$name]	= $info['connect_time'];
+			} else {
+				$rResultData[$name]	= -$info['connect_time'];
+			}
+
+	    });
+
+		//namelookup time
+    	$load				= $graph->collector("namelookup_$server");
+	    $load->min 			= 0;
+    	$graph->collect(function($load) {
+			global $info;
+			global $server;
+			global $rResultData;
+
+			$name	= "namelookup_${server}";
+			$sCode	= $info['http_code'];
+			if ( $sCode == 200 || $sCode == 302 ) {
+				$rResultData[$name]	= $info['namelookup_time'];
+			} else {
+				$rResultData[$name]	= -$info['namelookup_time'];
+			}
+
+	    });
+		
+	});
+
+}
+
+krsort($rResultData);
+foreach ( $rResultData as $key => $value ) {
+
+	echo "${key}.value $value\n";
+}
+
+?>
